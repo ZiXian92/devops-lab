@@ -1,0 +1,36 @@
+suite: image
+release:
+  name: myapp
+  namespace: apps
+# Decouple the assertions from whatever Chart.yaml currently says.
+chart:
+  appVersion: 9.9.9
+templates:
+  - deployment.yaml
+tests:
+  - it: uses image.tag when set
+    set:
+      image.repository: example.com/app
+      image.tag: v1.2.3
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: example.com/app:v1.2.3
+      - isSubset:
+          path: metadata.labels
+          content:
+            app.kubernetes.io/version: v1.2.3
+
+  # values.yaml documents "Empty -> Chart.appVersion".
+  - it: falls back to the chart appVersion when image.tag is empty
+    set:
+      image.repository: example.com/app
+      image.tag: ""
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: example.com/app:9.9.9
+      - isSubset:
+          path: metadata.labels
+          content:
+            app.kubernetes.io/version: 9.9.9

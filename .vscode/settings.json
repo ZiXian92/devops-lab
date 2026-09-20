@@ -1,0 +1,56 @@
+{
+  "files.eol": "\n",
+  "files.encoding": "utf8",
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+  "editor.insertSpaces": true,
+  "editor.tabSize": 2,
+  "editor.detectIndentation": false,
+  "[markdown]": {
+    "files.trimTrailingWhitespace": false
+  },
+  "[yaml]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2,
+    "editor.autoIndent": "advanced"
+  },
+  "[ansible]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+  "[jinja]": {
+    "editor.tabSize": 2
+  },
+  "[python]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+  "[powershell]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+  "[dockerfile]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+  "[shellscript]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+  "[terraform]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+  "[terraform-vars]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+  "[json]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+  "[jsonc]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  }
+}

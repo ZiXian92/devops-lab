@@ -1,0 +1,59 @@
+# Every optional feature switched on at once. Used to prove that the hard-coded
+# guardrails still hold no matter what else is enabled.
+replicaCount: 5
+
+podLabels:
+  team: payments
+podAnnotations:
+  example.com/note: hello
+env:
+  - name: LOG_FORMAT
+    value: json
+podSecurityContext:
+  fsGroup: 1000
+
+livenessProbe:
+  httpGet:
+    path: /
+    port: http
+readinessProbe:
+  httpGet:
+    path: /
+    port: http
+
+placement:
+  nodeSelectionPolicy: prefer
+  nodeLabels:
+    topology.kubernetes.io/zone: eu-west-1a
+  taints:
+    - key: dedicated
+      value: infra
+      effect: NoSchedule
+
+serviceAccount:
+  name: app-sa
+  tokens:
+    kubernetes:
+      enabled: true
+    vault:
+      enabled: true
+
+ingress:
+  enabled: true
+  type: gateway
+  host: app.example.com
+  tls:
+    enabled: true
+    certificate: cert
+    key: key
+  gateway:
+    parentRef:
+      name: shared-gw
+      namespace: gateways
+
+configMap:
+  data:
+    app.properties: "a=b"
+secret:
+  data:
+    DB_PASSWORD: czNjcjN0

@@ -1,0 +1,49 @@
+suite: placement
+release:
+  name: myapp
+  namespace: apps
+templates:
+  - deployment.yaml
+tests:
+  - it: sets neither nodeSelector nor affinity without nodeLabels
+    asserts:
+      - notExists:
+          path: spec.template.spec.nodeSelector
+      - notExists:
+          path: spec.template.spec.affinity
+
+  - it: policy=must uses a hard nodeSelector and no affinity
+    set:
+      placement.nodeSelectionPolicy: must
+      placement.nodeLabels:
+        node-role.kubernetes.io/infra: ""
+    asserts:
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value:
+            node-role.kubernetes.io/infra: ""
+      - notExists:
+          path: spec.template.spec.affinity
+
+  - it: policy=prefer uses weighted node affinity and no nodeSelector
+    set:
+      placement.nodeSelectionPolicy: prefer
+      placement.nodeLabels:
+        node-role.kubernetes.io/infra: ""
+        topology.kubernetes.io/zone: eu-west-1a
+    asserts:
+      - notExists:
+          path: spec.template.spec.nodeSelector
+      - equal:
+          path: spec.template.spec.affinity.nodeAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].weight
+          value: 100
+      # empty label value -> match on existence; otherwise match the value
+      - equal:
+          path: spec.template.spec.affinity.nodeAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].preference.matchExpressions
+          value:
+            - key: node-role.kubernetes.io/infra
+              operator: Exists
+            - key: topology.kubernetes.io/zone
+              operator: In
+              values:
+                - eu-west-1a

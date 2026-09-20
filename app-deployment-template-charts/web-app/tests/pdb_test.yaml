@@ -1,0 +1,32 @@
+suite: pdb (hard-coded guardrail)
+release:
+  name: myapp
+  namespace: apps
+templates:
+  - pdb.yaml
+tests:
+  - it: is always rendered with maxUnavailable 1
+    asserts: &pdb
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: PodDisruptionBudget
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      - notExists:
+          path: spec.minAvailable
+      - equal:
+          path: metadata.namespace
+          value: apps
+
+  # Same assertions, hostile inputs: the policy must not depend on any value.
+  - it: is unchanged with every feature enabled
+    values:
+      - ./values/kitchen-sink.yaml
+    asserts: *pdb
+
+  - it: is unchanged with a single replica
+    set:
+      replicaCount: 1
+    asserts: *pdb

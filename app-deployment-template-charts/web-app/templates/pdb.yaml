@@ -1,0 +1,14 @@
+# Always rendered; maxUnavailable is intentionally hard-coded (not a value) so no
+# release can opt out of the disruption policy.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "web-app.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "web-app.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "web-app.selectorLabels" . | nindent 6 }}

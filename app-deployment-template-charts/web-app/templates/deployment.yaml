@@ -1,0 +1,239 @@
+{{- $cm := .Values.configMap }}
+{{- $sec := .Values.secret }}
+{{- $cmOn := not (empty $cm.data) }}
+{{- $secOn := not (empty $sec.data) }}
+{{- $cmMethod := $cm.mountMethod | default "volume" }}
+{{- $secMethod := $sec.mountMethod | default "volume" }}
+{{- if not (has $cmMethod (list "env" "volume")) }}
+{{- fail (printf "configMap.mountMethod must be 'env' or 'volume' (got %q)" $cmMethod) }}
+{{- end }}
+{{- if not (has $secMethod (list "env" "volume")) }}
+{{- fail (printf "secret.mountMethod must be 'env' or 'volume' (got %q)" $secMethod) }}
+{{- end }}
+{{- $cmVol := and $cmOn (eq $cmMethod "volume") }}
+{{- $secVol := and $secOn (eq $secMethod "volume") }}
+{{- $cmEnv := and $cmOn (eq $cmMethod "env") }}
+{{- $secEnv := and $secOn (eq $secMethod "env") }}
+{{- if and $cmVol $secVol (eq $cm.mountPath $sec.mountPath) }}
+{{- fail "configMap.mountPath and secret.mountPath must differ" }}
+{{- end }}
+{{- $pl := .Values.placement }}
+{{- if not (has $pl.nodeSelectionPolicy (list "must" "prefer")) }}
+{{- fail (printf "placement.nodeSelectionPolicy must be 'must' or 'prefer' (got %q)" $pl.nodeSelectionPolicy) }}
+{{- end }}
+{{- $k8sTok := .Values.serviceAccount.tokens.kubernetes }}
+{{- $vaultTok := .Values.serviceAccount.tokens.vault }}
+{{- if and $k8sTok.enabled $vaultTok.enabled (eq (trimSuffix "/" $vaultTok.mountPath) "/var/run/secrets/kubernetes.io/serviceaccount") }}
+{{- fail "serviceAccount.tokens.vault.mountPath must differ from the kubernetes token path" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "web-app.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "web-app.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "web-app.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- if $cmOn }}
+        checksum/configmap: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if $secOn }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "web-app.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "web-app.serviceAccountName" . }}
+      # Hard-coded. To get a token, use serviceAccount.projectedToken instead.
+      automountServiceAccountToken: false
+      # Required by restricted-v3 (own user namespace). Hard-coded.
+      hostUsers: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        {{- with .Values.podSecurityContext }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.containerPort }}
+              protocol: TCP
+          {{- with .Values.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if or $cmEnv $secEnv }}
+          envFrom:
+            {{- if $cmEnv }}
+            - configMapRef:
+                name: {{ include "web-app.configMapName" . }}
+            {{- end }}
+            {{- if $secEnv }}
+            - secretRef:
+                name: {{ include "web-app.secretName" . }}
+            {{- end }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            # The root filesystem is read-only; give the app a scratch dir.
+            - name: tmp
+              mountPath: /tmp
+            {{- if $cmVol }}
+            - name: config
+              mountPath: {{ $cm.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- if $secVol }}
+            - name: secret
+              mountPath: {{ $sec.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- if $k8sTok.enabled }}
+            - name: sa-token
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+            {{- end }}
+            {{- if $vaultTok.enabled }}
+            - name: vault-token
+              mountPath: {{ $vaultTok.mountPath }}
+              readOnly: true
+            {{- end }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: {{ .Values.topologySpread.topologyKey }}
+          # Best effort so a rollout never sticks on Pending pods. Hard-coded.
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "web-app.selectorLabels" . | nindent 14 }}
+          # During a rollout only compare pods of the same ReplicaSet.
+          matchLabelKeys:
+            - pod-template-hash
+      {{- if $pl.nodeLabels }}
+      {{- if eq $pl.nodeSelectionPolicy "must" }}
+      nodeSelector:
+        {{- toYaml $pl.nodeLabels | nindent 8 }}
+      {{- else }}
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  {{- range $key, $value := $pl.nodeLabels }}
+                  {{- if eq (toString $value) "" }}
+                  - key: {{ $key | quote }}
+                    operator: Exists
+                  {{- else }}
+                  - key: {{ $key | quote }}
+                    operator: In
+                    values:
+                      - {{ toString $value | quote }}
+                  {{- end }}
+                  {{- end }}
+      {{- end }}
+      {{- end }}
+      {{- with $pl.taints }}
+      tolerations:
+        {{- range . }}
+        - key: {{ .key | quote }}
+          {{- if .value }}
+          operator: Equal
+          value: {{ .value | quote }}
+          {{- else }}
+          operator: Exists
+          {{- end }}
+          {{- with .effect }}
+          effect: {{ . }}
+          {{- end }}
+        {{- end }}
+      {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if $cmVol }}
+        - name: config
+          configMap:
+            name: {{ include "web-app.configMapName" . }}
+            defaultMode: {{ $cm.defaultMode }}
+        {{- end }}
+        {{- if $secVol }}
+        - name: secret
+          secret:
+            secretName: {{ include "web-app.secretName" . }}
+            defaultMode: {{ $sec.defaultMode }}
+        {{- end }}
+        {{- if $k8sTok.enabled }}
+        # audience: kubernetes. No `audience` field -> the API server's own audience.
+        - name: sa-token
+          projected:
+            defaultMode: 292 # 0444
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: {{ $k8sTok.expirationSeconds }}
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        apiVersion: v1
+                        fieldPath: metadata.namespace
+        {{- end }}
+        {{- if $vaultTok.enabled }}
+        # audience: vault. Not accepted by the Kubernetes API.
+        - name: vault-token
+          projected:
+            defaultMode: 292 # 0444
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: vault
+                  expirationSeconds: {{ $vaultTok.expirationSeconds }}
+        {{- end }}

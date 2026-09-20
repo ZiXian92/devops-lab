@@ -1,0 +1,2 @@
+# Local overlays holding base64 secret data (see values.yaml -> secret.data)
+secret*.values.yaml

@@ -1,0 +1,288 @@
+suite: ingress (one block, three implementations)
+release:
+  name: myapp
+  namespace: apps
+templates:
+  - ingress.yaml
+  - gateway.yaml
+  - route.yaml
+  - tls-secret.yaml
+values:
+  - ./values/ingress-base.yaml
+tests:
+  # ---- exclusivity: exactly one implementation per type -------------------
+  - it: renders nothing when ingress is disabled
+    set:
+      ingress.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: ingress.yaml
+      - hasDocuments:
+          count: 0
+        template: gateway.yaml
+      - hasDocuments:
+          count: 0
+        template: route.yaml
+      - hasDocuments:
+          count: 0
+        template: tls-secret.yaml
+
+  - it: type=ingress renders only an Ingress
+    set:
+      ingress.type: ingress
+    asserts:
+      - hasDocuments:
+          count: 1
+        template: ingress.yaml
+      - isKind:
+          of: Ingress
+        template: ingress.yaml
+      - hasDocuments:
+          count: 0
+        template: gateway.yaml
+      - hasDocuments:
+          count: 0
+        template: route.yaml
+
+  - it: type=gateway renders only a ListenerSet and an HTTPRoute
+    set:
+      ingress.type: gateway
+      ingress.gateway.parentRef.name: shared-gw
+    asserts:
+      - hasDocuments:
+          count: 2
+        template: gateway.yaml
+      - isKind:
+          of: ListenerSet
+        template: gateway.yaml
+        documentIndex: 0
+      - isKind:
+          of: HTTPRoute
+        template: gateway.yaml
+        documentIndex: 1
+      - hasDocuments:
+          count: 0
+        template: ingress.yaml
+      - hasDocuments:
+          count: 0
+        template: route.yaml
+
+  - it: type=route renders only a Route
+    set:
+      ingress.type: route
+    asserts:
+      - hasDocuments:
+          count: 1
+        template: route.yaml
+      - isKind:
+          of: Route
+        template: route.yaml
+      - hasDocuments:
+          count: 0
+        template: ingress.yaml
+      - hasDocuments:
+          count: 0
+        template: gateway.yaml
+
+  # ---- type=ingress details -----------------------------------------------
+  - it: ingress has no class and no tls block by default
+    set:
+      ingress.type: ingress
+    asserts:
+      - notExists:
+          path: spec.ingressClassName
+        template: ingress.yaml
+      - notExists:
+          path: spec.tls
+        template: ingress.yaml
+      - equal:
+          path: spec.rules[0].host
+          value: app.example.com
+        template: ingress.yaml
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.name
+          value: myapp-web-app
+        template: ingress.yaml
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.port.name
+          value: http
+        template: ingress.yaml
+
+  - it: ingress uses the class and TLS secret when configured
+    set:
+      ingress.type: ingress
+      ingress.ingress.className: nginx
+      ingress.tls.enabled: true
+      ingress.tls.certificate: cert
+      ingress.tls.key: key
+    asserts:
+      - equal:
+          path: spec.ingressClassName
+          value: nginx
+        template: ingress.yaml
+      - equal:
+          path: spec.tls[0].secretName
+          value: myapp-web-app-tls
+        template: ingress.yaml
+
+  # ---- type=gateway details -----------------------------------------------
+  - it: gateway listens on http/80 without TLS and the route targets that listener
+    set:
+      ingress.type: gateway
+      ingress.gateway.parentRef.name: shared-gw
+    asserts:
+      - equal:
+          path: spec.listeners[0].name
+          value: http
+        template: gateway.yaml
+        documentIndex: 0
+      - equal:
+          path: spec.listeners[0].port
+          value: 80
+        template: gateway.yaml
+        documentIndex: 0
+      - equal:
+          path: spec.listeners[0].protocol
+          value: HTTP
+        template: gateway.yaml
+        documentIndex: 0
+      - notExists:
+          path: spec.listeners[0].tls
+        template: gateway.yaml
+        documentIndex: 0
+      - notExists:
+          path: spec.parentRef.namespace
+        template: gateway.yaml
+        documentIndex: 0
+      - equal:
+          path: spec.parentRefs[0].sectionName
+          value: http
+        template: gateway.yaml
+        documentIndex: 1
+
+  - it: gateway listens on https/443 with TLS and the route targets that listener
+    set:
+      ingress.type: gateway
+      ingress.gateway.parentRef.name: shared-gw
+      ingress.gateway.parentRef.namespace: gateways
+      ingress.tls.enabled: true
+      ingress.tls.certificate: cert
+      ingress.tls.key: key
+    asserts:
+      - equal:
+          path: spec.listeners[0].name
+          value: https
+        template: gateway.yaml
+        documentIndex: 0
+      - equal:
+          path: spec.listeners[0].port
+          value: 443
+        template: gateway.yaml
+        documentIndex: 0
+      - equal:
+          path: spec.listeners[0].tls.mode
+          value: Terminate
+        template: gateway.yaml
+        documentIndex: 0
+      - equal:
+          path: spec.listeners[0].tls.certificateRefs[0].name
+          value: myapp-web-app-tls
+        template: gateway.yaml
+        documentIndex: 0
+      - equal:
+          path: spec.parentRef.namespace
+          value: gateways
+        template: gateway.yaml
+        documentIndex: 0
+      - equal:
+          path: spec.parentRefs[0].sectionName
+          value: https
+        template: gateway.yaml
+        documentIndex: 1
+
+  # ---- type=route details -------------------------------------------------
+  - it: route inlines TLS material with edge termination and never redirects
+    set:
+      ingress.type: route
+      ingress.tls.enabled: true
+      ingress.tls.certificate: cert
+      ingress.tls.key: key
+    asserts:
+      - equal:
+          path: spec.tls.termination
+          value: edge
+        template: route.yaml
+      - equal:
+          path: spec.tls.certificate
+          value: cert
+        template: route.yaml
+      - notExists:
+          path: spec.tls.insecureEdgeTerminationPolicy
+        template: route.yaml
+
+  - it: route has no tls block without TLS
+    set:
+      ingress.type: route
+    asserts:
+      - notExists:
+          path: spec.tls
+        template: route.yaml
+
+  # ---- TLS Secret: built for ingress/gateway, never for route ---------------
+  - it: creates the TLS secret for type=ingress
+    set:
+      ingress.type: ingress
+      ingress.tls.enabled: true
+      ingress.tls.certificate: cert
+      ingress.tls.key: key
+    asserts:
+      - hasDocuments:
+          count: 1
+        template: tls-secret.yaml
+      - equal:
+          path: type
+          value: kubernetes.io/tls
+        template: tls-secret.yaml
+      - equal:
+          path: metadata.name
+          value: myapp-web-app-tls
+        template: tls-secret.yaml
+      # base64("cert") / base64("key"): the chart encodes, the user passes plain PEM
+      - equal:
+          path: data
+          value:
+            tls.crt: Y2VydA==
+            tls.key: a2V5
+        template: tls-secret.yaml
+
+  - it: creates the TLS secret for type=gateway
+    set:
+      ingress.type: gateway
+      ingress.gateway.parentRef.name: shared-gw
+      ingress.tls.enabled: true
+      ingress.tls.certificate: cert
+      ingress.tls.key: key
+    asserts:
+      - hasDocuments:
+          count: 1
+        template: tls-secret.yaml
+
+  - it: does not create the TLS secret for type=route (PEMs are inlined)
+    set:
+      ingress.type: route
+      ingress.tls.enabled: true
+      ingress.tls.certificate: cert
+      ingress.tls.key: key
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: tls-secret.yaml
+
+  - it: does not create the TLS secret when TLS is off
+    set:
+      ingress.type: ingress
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: tls-secret.yaml

@@ -1,0 +1,250 @@
+# Default values for web-app.
+#
+# All namespaced resources are created in the Helm release namespace
+# (`helm install -n <ns>` / `--create-namespace`). There is deliberately no
+# `namespace` value: it would let the chart drift from where Helm tracks the release.
+
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 2
+
+image:
+  # Placeholder unprivileged image (non-root, listens on 8080). Replace with your app.
+  repository: nginxinc/nginx-unprivileged
+  # Empty -> Chart.appVersion
+  tag: "latest"
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# ---------------------------------------------------------------------------
+# Container command / args
+# ---------------------------------------------------------------------------
+# `command` overrides the image ENTRYPOINT, `args` overrides the image CMD.
+# Most of the time you only need `args`.
+command: []
+args: []
+#  - --port=8080
+#  - --log-level=info
+
+# Plain (non-sensitive) environment variables, standard Kubernetes EnvVar list.
+env: []
+#  - name: LOG_FORMAT
+#    value: json
+
+containerPort: 8080
+
+# The Service is not configurable: always ClusterIP on port 80 -> container port `http`.
+
+# The chart does NOT create a ServiceAccount (nor RBAC): namespace onboarding does,
+# together with any RoleBinding it needs. Just reference it by name.
+serviceAccount:
+  # Empty -> the namespace's `default` ServiceAccount.
+  name: ""
+  # `automountServiceAccountToken: false` is hard-coded in the template: a typical web
+  # app never calls the Kubernetes API. Opt in to the tokens below instead.
+  #
+  # Each token is a kubelet-managed projected volume: no Secret is created or read. The
+  # kubelet requests it from the API server (TokenRequest) for the ServiceAccount above,
+  # bound to this pod, and rewrites the file at ~80% of its lifetime, so the app must
+  # re-read the file rather than cache the token. Only these two audiences are supported,
+  # and both can be enabled at once (one token per audience).
+  tokens:
+    # audience: the Kubernetes API server. Mounted at the standard path client
+    # libraries look at, /var/run/secrets/kubernetes.io/serviceaccount, with:
+    #   token     - the ServiceAccount token (JWT)
+    #   ca.crt    - the cluster CA (from the kube-root-ca.crt ConfigMap)
+    #   namespace - the pod's namespace (downward API)
+    kubernetes:
+      enabled: false
+      expirationSeconds: 3600   # minimum 600
+    # audience: `vault` (hard-coded). Set `audience="vault"` on the Vault Kubernetes-auth
+    # role to match. The Kubernetes API rejects this token. One file: <mountPath>/token.
+    vault:
+      enabled: false
+      expirationSeconds: 3600   # minimum 600
+      mountPath: /var/run/secrets/vault
+
+podAnnotations: {}
+podLabels: {}
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+# Probes are disabled by default; an empty map omits them from the Deployment.
+# To enable, set the probe spec, e.g.:
+#   livenessProbe:
+#     httpGet:
+#       path: /
+#       port: http
+#     initialDelaySeconds: 5
+#     periodSeconds: 10
+livenessProbe: {}
+#   readinessProbe:
+#     httpGet:
+#       path: /
+#       port: http
+#     periodSeconds: 5
+readinessProbe: {}
+
+# ---------------------------------------------------------------------------
+# Placement
+# ---------------------------------------------------------------------------
+placement:
+  # How `nodeLabels` is applied:
+  #   must   -> spec.nodeSelector. Hard requirement: pods stay Pending if no node matches.
+  #   prefer -> node affinity (preferredDuringScheduling, weight 100). Soft: the
+  #             scheduler favours matching nodes but falls back to others.
+  nodeSelectionPolicy: must
+  # Node labels to select on. An empty value matches on label existence only.
+  nodeLabels: {}
+  #  node-role.kubernetes.io/infra: ""
+  #  topology.kubernetes.io/zone: eu-west-1a
+  # Taints of the target nodes to tolerate; one toleration is generated per entry.
+  # Fields mirror `kubectl get node -o yaml` -> spec.taints. Empty `value` -> operator
+  # Exists (any value); empty `effect` -> tolerates every effect of that key.
+  taints: []
+  #  - key: dedicated
+  #    value: infra
+  #    effect: NoSchedule
+
+# ---------------------------------------------------------------------------
+# Security: written to pass the OpenShift `restricted-v3` SCC and the
+# Kubernetes `restricted` Pod Security Standard (PSA).
+# ---------------------------------------------------------------------------
+# Do NOT set runAsUser / runAsGroup / fsGroup / seLinuxOptions here:
+#   - On OpenShift the SCC assigns them from the namespace's UID range; a
+#     hard-coded value outside that range is rejected.
+#   - On plain Kubernetes, if the app needs a group-readable secret volume, set
+#     `podSecurityContext.fsGroup` yourself.
+# Your image must therefore run as an arbitrary non-root UID (files it writes to
+# must be group-0 writable, and it must not need to bind ports < 1024).
+
+# Hard-coded in the template (not values): `hostUsers: false` (pod runs in its own
+# user namespace, required by restricted-v3; the cluster/runtime must support user
+# namespaces) and `seccompProfile: RuntimeDefault`. Do not add `seccompProfile`
+# below: it would duplicate the key.
+podSecurityContext:
+  runAsNonRoot: true
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# ---------------------------------------------------------------------------
+# Availability
+# ---------------------------------------------------------------------------
+# A PodDisruptionBudget with `maxUnavailable: 1` is ALWAYS rendered and is
+# hard-coded in templates/pdb.yaml (not configurable on purpose).
+
+# Spread replicas across nodes. `maxSkew: 1` and `whenUnsatisfiable: ScheduleAnyway`
+# are hard-coded in the template: the spread is best effort, so a rollout can never
+# get stuck on Pending pods.
+topologySpread:
+  topologyKey: kubernetes.io/hostname
+
+# ---------------------------------------------------------------------------
+# Ingress: one block, three implementations. Pick with `ingress.type`.
+#   ingress : networking.k8s.io/v1 Ingress
+#   gateway : Gateway API ListenerSet (created by this chart, attached to an existing
+#             shared Gateway) + HTTPRoute
+#   route   : OpenShift Route
+#
+# Hard-coded in the templates (not configurable on purpose):
+#   - matches host `ingress.host` and path prefix `/`
+#   - listens on 443 when `tls.enabled`, on 80 otherwise (no HTTP -> HTTPS redirect)
+#   - TLS is always terminated at the ingress side (backend traffic is plain HTTP)
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: false
+  type: ingress
+  # Hostname. Mandatory for every type.
+  host: ""
+  # Annotations for the controller-specific configuration of the resource. Applied to
+  # type=ingress (Ingress, e.g. nginx.ingress.kubernetes.io/ssl-redirect) and type=route
+  # (Route, e.g. haproxy.router.openshift.io/timeout). Ignored for type=gateway: the
+  # Gateway API is configured through spec fields, not annotations.
+  annotations: {}
+
+  tls:
+    enabled: false
+    # PEM contents (NOT base64). The chart builds the TLS Secret `<fullname>-tls` from
+    # them (type=route: inlined into the Route instead). Mandatory when `enabled`.
+    # Do not commit them: generate an untracked overlay with yq v4 and pass it with -f:
+    #   yq -i '.ingress.tls.certificate = load_str("./tls.crt")' secret.values.yaml
+    #   yq -i '.ingress.tls.key = load_str("./tls.key")' secret.values.yaml
+    certificate: ""
+    key: ""
+
+  # --- type: ingress ---
+  ingress:
+    className: ""
+
+  # --- type: gateway ---
+  # This chart creates a ListenerSet (named `<fullname>`) in the release namespace, which
+  # is assumed to hold only this app, plus an HTTPRoute bound to it. The TLS Secret lives
+  # in the same namespace (no ReferenceGrant needed).
+  # The ListenerSet is hard-coded to the standard channel: gateway.networking.k8s.io/v1
+  # (Gateway API >= 1.5), so the cluster must have that CRD installed.
+  # The parent Gateway must opt in via spec.allowedListeners, e.g.
+  #   allowedListeners: { namespaces: { from: All } }
+  gateway:
+    parentRef:
+      name: ""          # REQUIRED: the shared Gateway
+      namespace: ""     # empty = release namespace
+
+  # --- type: route (OpenShift) ---
+  # No type-specific settings.
+
+# ---------------------------------------------------------------------------
+# ConfigMap: your (non-sensitive) config. Rendered only when `data` is non-empty.
+# ---------------------------------------------------------------------------
+configMap:
+  # volume : each key becomes a file under mountPath (default)
+  # env    : each key becomes an environment variable (keys must be valid env var names)
+  mountMethod: volume
+  # Only used when mountMethod=volume.
+  mountPath: /etc/app/config
+  defaultMode: 0444
+  # key -> file contents
+  data: {}
+  #  app.properties: |
+  #    greeting=hello
+  #    feature.x=true
+
+# ---------------------------------------------------------------------------
+# Secret: your sensitive config. Rendered only when `data` is non-empty.
+# ---------------------------------------------------------------------------
+secret:
+  # volume : each key becomes a file under mountPath (default)
+  # env    : each key becomes an environment variable (keys must be valid env var names)
+  mountMethod: volume
+  # Only used when mountMethod=volume.
+  mountPath: /etc/app/secret
+  # 0440 relies on fsGroup, which OpenShift assigns automatically. On plain
+  # Kubernetes set podSecurityContext.fsGroup, or use 0444.
+  defaultMode: 0440
+  # This maps 1:1 onto the Secret's `data:` field, so VALUES MUST BE BASE64.
+  # Do not type secrets into this file or commit them. Generate an untracked
+  # overlay with yq v4 (https://github.com/mikefarah/yq) and pass it with -f:
+  #
+  #   # a value from an environment variable (keeps it out of the command line):
+  #   DB_PASSWORD='s3cr3t' \
+  #   yq -n '.secret.data.DB_PASSWORD = (strenv(DB_PASSWORD) | @base64)' > secret.values.yaml
+  #
+  #   # the contents of a file (certs, keys, .properties files ...); quote keys
+  #   # containing dots. -i edits the existing overlay in place:
+  #   yq -i '.secret.data."tls.key" = (load_str("./tls.key") | @base64)' secret.values.yaml
+  #
+  #   helm upgrade --install my-app . -n my-ns -f values.yaml -f secret.values.yaml
+  #
+  # `secret*.values.yaml` is git-ignored by the chart's .gitignore.
+  data: {}

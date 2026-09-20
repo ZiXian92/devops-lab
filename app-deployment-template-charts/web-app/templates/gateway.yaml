@@ -1,0 +1,63 @@
+{{- if and .Values.ingress.enabled (eq (include "web-app.ingressType" .) "gateway") }}
+{{- $gw := .Values.ingress.gateway }}
+{{- $tls := .Values.ingress.tls.enabled }}
+{{- $host := include "web-app.ingressHost" . }}
+{{- $parentName := required "ingress.gateway.parentRef.name is required when ingress.type=gateway" $gw.parentRef.name }}
+{{- $listenerName := ternary "https" "http" $tls }}
+{{- $fullname := include "web-app.fullname" . }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: ListenerSet
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "web-app.labels" . | nindent 4 }}
+spec:
+  parentRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: {{ $parentName }}
+    {{- with $gw.parentRef.namespace }}
+    namespace: {{ . }}
+    {{- end }}
+  listeners:
+    - name: {{ $listenerName }}
+      port: {{ ternary 443 80 $tls }}
+      protocol: {{ ternary "HTTPS" "HTTP" $tls }}
+      hostname: {{ $host | quote }}
+      {{- if $tls }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - group: ""
+            kind: Secret
+            name: {{ include "web-app.tlsSecretName" . }}
+      {{- end }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "web-app.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: ListenerSet
+      name: {{ $fullname }}
+      sectionName: {{ $listenerName }}
+  hostnames:
+    - {{ $host | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ $fullname }}
+          port: 80
+{{- end }}

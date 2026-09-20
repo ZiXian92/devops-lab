@@ -1,0 +1,183 @@
+suite: configMap and secret
+release:
+  name: myapp
+  namespace: apps
+templates:
+  - configmap.yaml
+  - secret.yaml
+  - deployment.yaml
+tests:
+  - it: renders nothing and mounts nothing by default
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: configmap.yaml
+      - hasDocuments:
+          count: 0
+        template: secret.yaml
+      - lengthEqual:
+          path: spec.template.spec.volumes
+          count: 1
+        template: deployment.yaml
+      - lengthEqual:
+          path: spec.template.spec.containers[0].volumeMounts
+          count: 1
+        template: deployment.yaml
+      - notExists:
+          path: spec.template.spec.containers[0].envFrom
+        template: deployment.yaml
+      - isNullOrEmpty:
+          path: spec.template.metadata.annotations
+        template: deployment.yaml
+
+  # ---- configMap ----------------------------------------------------------
+  - it: mounts the configMap as a read-only volume by default
+    set:
+      configMap:
+        data:
+          app.properties: "a=b"
+    asserts:
+      - hasDocuments:
+          count: 1
+        template: configmap.yaml
+      - equal:
+          path: data
+          value:
+            app.properties: "a=b"
+        template: configmap.yaml
+      - equal:
+          path: metadata.name
+          value: myapp-web-app-config
+        template: configmap.yaml
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: config
+            mountPath: /etc/app/config
+            readOnly: true
+        template: deployment.yaml
+      - equal:
+          path: spec.template.spec.volumes[?(@.name == 'config')].configMap.name
+          value: myapp-web-app-config
+        template: deployment.yaml
+      - notExists:
+          path: spec.template.spec.containers[0].envFrom
+        template: deployment.yaml
+      - matchRegex:
+          path: spec.template.metadata.annotations.checksum/configmap
+          pattern: ^[a-f0-9]{64}$
+        template: deployment.yaml
+
+  - it: injects the configMap as env when mountMethod=env
+    set:
+      configMap:
+        mountMethod: env
+        data:
+          LOG_LEVEL: info
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].envFrom
+          content:
+            configMapRef:
+              name: myapp-web-app-config
+        template: deployment.yaml
+      - lengthEqual:
+          path: spec.template.spec.volumes
+          count: 1
+        template: deployment.yaml
+      - lengthEqual:
+          path: spec.template.spec.containers[0].volumeMounts
+          count: 1
+        template: deployment.yaml
+
+  # ---- secret -------------------------------------------------------------
+  - it: mounts the secret as a read-only volume and passes data through untouched
+    set:
+      secret:
+        data:
+          DB_PASSWORD: czNjcjN0
+    asserts:
+      - hasDocuments:
+          count: 1
+        template: secret.yaml
+      - equal:
+          path: data
+          value:
+            DB_PASSWORD: czNjcjN0
+        template: secret.yaml
+      - equal:
+          path: metadata.name
+          value: myapp-web-app-secret
+        template: secret.yaml
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: secret
+            mountPath: /etc/app/secret
+            readOnly: true
+        template: deployment.yaml
+      - equal:
+          path: spec.template.spec.volumes[?(@.name == 'secret')].secret.secretName
+          value: myapp-web-app-secret
+        template: deployment.yaml
+      - matchRegex:
+          path: spec.template.metadata.annotations.checksum/secret
+          pattern: ^[a-f0-9]{64}$
+        template: deployment.yaml
+
+  - it: injects the secret as env when mountMethod=env
+    set:
+      secret:
+        mountMethod: env
+        data:
+          DB_PASSWORD: czNjcjN0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].envFrom
+          content:
+            secretRef:
+              name: myapp-web-app-secret
+        template: deployment.yaml
+      - lengthEqual:
+          path: spec.template.spec.volumes
+          count: 1
+        template: deployment.yaml
+
+  # ---- mixed --------------------------------------------------------------
+  - it: supports configMap as a volume and secret as env at the same time
+    set:
+      configMap:
+        data:
+          app.properties: "a=b"
+      secret:
+        mountMethod: env
+        data:
+          DB_PASSWORD: czNjcjN0
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.volumes
+          count: 2
+        template: deployment.yaml
+      - lengthEqual:
+          path: spec.template.spec.containers[0].envFrom
+          count: 1
+        template: deployment.yaml
+      - equal:
+          path: spec.template.spec.containers[0].envFrom[0].secretRef.name
+          value: myapp-web-app-secret
+        template: deployment.yaml
+
+  - it: fails when both are volumes on the same path
+    template: deployment.yaml
+    set:
+      configMap:
+        mountPath: /etc/shared
+        data:
+          a: b
+      secret:
+        mountPath: /etc/shared
+        data:
+          DB_PASSWORD: czNjcjN0
+    asserts:
+      - failedTemplate:
+          errorMessage: configMap.mountPath and secret.mountPath must differ

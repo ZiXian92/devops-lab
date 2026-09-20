@@ -1,0 +1,59 @@
+suite: selector contract (Deployment / Service / PDB)
+release:
+  name: myapp
+  namespace: apps
+templates:
+  - deployment.yaml
+  - service.yaml
+  - pdb.yaml
+  # loaded only because deployment.yaml includes them for its checksum annotations
+  - configmap.yaml
+  - secret.yaml
+tests:
+  # The three resources must select the exact same pods. Helm-unittest cannot
+  # compare across documents, so each is asserted against the same literal map.
+  - it: selects the same pods everywhere
+    asserts: &selectors
+      - equal:
+          path: spec.selector.matchLabels
+          value: &sel
+            app.kubernetes.io/name: web-app
+            app.kubernetes.io/instance: myapp
+        template: deployment.yaml
+      - isSubset:
+          path: spec.template.metadata.labels
+          content: *sel
+        template: deployment.yaml
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].labelSelector.matchLabels
+          value: *sel
+        template: deployment.yaml
+      - equal:
+          path: spec.selector
+          value: *sel
+        template: service.yaml
+      - equal:
+          path: spec.selector.matchLabels
+          value: *sel
+        template: pdb.yaml
+
+  # podLabels are added to the pods but must never leak into a selector.
+  - it: keeps selectors unchanged when podLabels and everything else are set
+    values:
+      - ./values/kitchen-sink.yaml
+    asserts: *selectors
+
+  - it: adds podLabels to the pods only
+    set:
+      podLabels:
+        team: payments
+    asserts:
+      - isSubset:
+          path: spec.template.metadata.labels
+          content:
+            team: payments
+        template: deployment.yaml
+      - equal:
+          path: spec.selector.matchLabels
+          value: *sel
+        template: deployment.yaml

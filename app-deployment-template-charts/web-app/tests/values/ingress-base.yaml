@@ -1,0 +1,4 @@
+# Minimum needed to enter any ingress code path. Tests add only what they vary.
+ingress:
+  enabled: true
+  host: app.example.com

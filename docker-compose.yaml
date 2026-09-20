@@ -1,0 +1,53 @@
+version: "3.8"
+
+services:
+  nexus:
+    image: sonatype/nexus3:3.96.0
+    container_name: nexus
+    ports:
+      - "8081:8081"
+    volumes:
+      - nexus-data:/nexus-data
+    environment:
+      - INSTALL4J_ADD_VM_PARAMS=-Xms1200m -Xmx1200m -XX:MaxDirectMemorySize=2g -Djava.util.prefs.userRoot=/nexus-data/javaprefs
+    mem_limit: 3g
+    restart: unless-stopped
+
+  # Helm CI/CD toolbox (helm, helm-unittest, kubeconform + the `tasks` script). It idles;
+  # work is done by exec-ing into it:
+  #   podman compose exec helm-cicd tasks all
+  #   podman compose exec helm-cicd tasks publish web-app
+  # Rebuild after changing images/helm-cicd:  podman compose up -d --build helm-cicd
+  helm-cicd:
+    build:
+      context: ./images/helm-cicd
+    image: devops-lab/helm-cicd:local
+    container_name: helm-cicd
+    command: ["sleep", "infinity"]
+    init: true
+    depends_on:
+      - nexus
+    volumes:
+      # Charts are read-only: the container packages into /tmp/dist, never into the repo.
+      - ./app-deployment-template-charts:/workspace/app-deployment-template-charts:ro
+      # helm-publisher credentials written by nexus-tf (created empty by Start-Services.ps1).
+      - ./nexus-tf/helm-registry:/run/nexus-credentials:ro
+    environment:
+      - HELM_OCI_REPO=oci://nexus:8081/oci-internal/helm/deployment-templates
+      - HELM_PLAIN_HTTP=true
+    # Hardening: nothing here needs root, extra privileges or a writable image.
+    read_only: true
+    tmpfs:
+      - /tmp
+      # helm's cache/config. podman rejects uid=/gid= here, so the mount is sticky and
+      # world-writable like /tmp; the container only has the one user anyway.
+      - /home/helm:mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    restart: unless-stopped
+
+volumes:
+  nexus-data:

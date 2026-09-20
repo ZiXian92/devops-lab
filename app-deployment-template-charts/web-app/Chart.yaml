@@ -1,0 +1,7 @@
+apiVersion: v2
+name: web-app
+description: Opinionated template chart for a typical stateless web app (Kubernetes / OpenShift)
+type: application
+version: 0.1.0
+# Used as the image tag when image.tag is empty.
+appVersion: "0.1.0"

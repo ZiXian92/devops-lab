@@ -1,0 +1,136 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Compose: up + post-startup",
+      "detail": "podman compose up -d for docker-compose.yaml, run each service's post-startup actions (e.g. Nexus admin password), then terraform apply every *-tf module",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\scripts\\Start-Services.ps1"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Compose: first-time setup (set Nexus admin password)",
+      "detail": "Same as Compose: up + post-startup, but first asks for the Nexus admin password and changes admin from its initial password to it. Only needed while nexus-tf/terraform.auto.tfvars.json does not exist; afterwards the password is read from that file and the plain task never prompts",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\scripts\\Start-Services.ps1",
+        "-NexusAdminPassword",
+        "${input:nexusAdminPassword}"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Terraform: apply all",
+      "detail": "terraform init + apply for every *-tf module (nexus-tf, ...) in its container, to keep the systems' internal resources up to date. Services must already be running (see Compose: up + post-startup, which runs this as its last step)",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\scripts\\Apply-Terraform.ps1"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Helm: test chart(s)",
+      "detail": "Pick a chart (or all, in sequence) and run helm lint + helm-unittest + kubeconform on it in the helm-cicd container",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\scripts\\Test-Charts.ps1",
+        "-Chart",
+        "${input:chart}"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Helm: publish chart to Nexus",
+      "detail": "Pick a chart and a semver version, set that version in the chart's Chart.yaml, run the full tests on it, then package it and push it to oci://localhost:8081/oci-internal/helm/deployment-templates (plain HTTP) as helm-publisher, in the helm-cicd container",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\scripts\\Publish-Chart.ps1",
+        "-Chart",
+        "${input:publishChart}",
+        "-Version",
+        "${input:chartVersion}"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "nexusAdminPassword",
+      "type": "promptString",
+      "description": "Nexus admin password to set",
+      "password": true
+    },
+    {
+      // The list is static (VS Code cannot scan folders without an extension): add each new
+      // chart's directory name under app-deployment-template-charts/ here (and in
+      // "publishChart" below). "all" always
+      // covers every chart, so a chart missing from this list is never skipped by a full run.
+      "id": "chart",
+      "type": "pickString",
+      "description": "Chart to test",
+      "options": ["all", "web-app"],
+      "default": "all"
+    },
+    {
+      // Same list as "chart" above, minus "all": one version applies to one chart.
+      "id": "publishChart",
+      "type": "pickString",
+      "description": "Chart to publish to Nexus",
+      "options": ["web-app"]
+    },
+    {
+      // VS Code cannot validate input; Publish-Chart.ps1 rejects anything that is not semver.
+      "id": "chartVersion",
+      "type": "promptString",
+      "description": "Semantic version to publish (MAJOR.MINOR.PATCH, e.g. 1.2.0 or 1.3.0-rc.1)",
+      "default": "0.1.0"
+    }
+  ]
+}

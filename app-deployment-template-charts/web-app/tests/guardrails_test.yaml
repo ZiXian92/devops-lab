@@ -1,0 +1,122 @@
+suite: guardrails (hard-coded security and runtime behaviour)
+release:
+  name: myapp
+  namespace: apps
+templates:
+  - deployment.yaml
+  - service.yaml
+  # deployment.yaml includes these for its checksum annotations, so they must be loaded
+  # for the kitchen-sink test even though nothing is asserted on them here.
+  - configmap.yaml
+  - secret.yaml
+tests:
+  # Hard-coded in the templates: asserted twice, with defaults and with every
+  # feature on. A guardrail moved inside an `if` fails the second test.
+  - it: hard-codes pod hardening, spreading and scratch space (defaults)
+    asserts: &hardcoded
+      - equal:
+          path: spec.template.spec.hostUsers
+          value: false
+        template: deployment.yaml
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+        template: deployment.yaml
+      - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
+        template: deployment.yaml
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].maxSkew
+          value: 1
+        template: deployment.yaml
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].whenUnsatisfiable
+          value: ScheduleAnyway
+        template: deployment.yaml
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].matchLabelKeys
+          value:
+            - pod-template-hash
+        template: deployment.yaml
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: tmp
+            emptyDir: {}
+        template: deployment.yaml
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tmp
+            mountPath: /tmp
+        template: deployment.yaml
+      - equal:
+          path: spec.template.spec.containers[0].ports[0].name
+          value: http
+        template: deployment.yaml
+      - equal:
+          path: metadata.namespace
+          value: apps
+        template: deployment.yaml
+      - equal:
+          path: spec.type
+          value: ClusterIP
+        template: service.yaml
+      - equal:
+          path: spec.ports[0].name
+          value: http
+        template: service.yaml
+      - equal:
+          path: spec.ports[0].port
+          value: 80
+        template: service.yaml
+      - equal:
+          path: spec.ports[0].targetPort
+          value: http
+        template: service.yaml
+      - equal:
+          path: metadata.namespace
+          value: apps
+        template: service.yaml
+
+  - it: keeps the hard-coded guardrails with every feature enabled
+    values:
+      - ./values/kitchen-sink.yaml
+    asserts: *hardcoded
+
+  # Defaults (not hard-coded): only meaningful with default values. The whole
+  # object is compared, so an extra runAsUser / seLinuxOptions also fails.
+  - it: is secure by default and pins no UID (OpenShift SCC assigns it)
+    template: deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            seccompProfile:
+              type: RuntimeDefault
+            runAsNonRoot: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext
+          value:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+  - it: keeps hard-coded pod settings when the user adds pod security fields
+    template: deployment.yaml
+    set:
+      podSecurityContext:
+        fsGroup: 1000
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 1000
+      - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true

@@ -1,0 +1,10 @@
+# Written by scripts/Start-Services.ps1 -- holds all variable values, including the admin password
+terraform.auto.tfvars.json
+# Helm registry credentials written by helm-access.tf
+helm-registry/
+
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+crash.log

@@ -1,0 +1,316 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "web-app values",
+  "type": "object",
+  "additionalProperties": false,
+  "definitions": {
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "quantityMap": {
+      "type": "object",
+      "additionalProperties": { "type": ["string", "number"] }
+    },
+    "base64": {
+      "type": "string",
+      "pattern": "^([A-Za-z0-9+/]{4})*([A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+    },
+    "dataKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^[-._a-zA-Z0-9]+$"
+    },
+    "envName": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    },
+    "mountMethod": {
+      "type": "string",
+      "enum": ["volume", "env"]
+    },
+    "fileMode": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 511
+    },
+    "absolutePath": {
+      "type": "string",
+      "pattern": "^/"
+    },
+    "projectedToken": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "expirationSeconds": { "type": "integer", "minimum": 600 }
+      }
+    }
+  },
+  "properties": {
+    "nameOverride": { "type": "string", "maxLength": 63 },
+    "fullnameOverride": { "type": "string", "maxLength": 63 },
+
+    "replicaCount": { "type": "integer", "minimum": 0 },
+
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": { "name": { "type": "string", "minLength": 1 } }
+      }
+    },
+
+    "command": { "type": "array", "items": { "type": "string" } },
+    "args": { "type": "array", "items": { "type": "string" } },
+    "env": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": { "name": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "containerPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "maxLength": 253 },
+        "tokens": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kubernetes": { "$ref": "#/definitions/projectedToken" },
+            "vault": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "expirationSeconds": { "type": "integer", "minimum": 600 },
+                "mountPath": { "$ref": "#/definitions/absolutePath" }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "podAnnotations": { "$ref": "#/definitions/stringMap" },
+    "podLabels": { "$ref": "#/definitions/stringMap" },
+
+    "resources": {
+      "type": "object",
+      "properties": {
+        "requests": { "$ref": "#/definitions/quantityMap" },
+        "limits": { "$ref": "#/definitions/quantityMap" }
+      }
+    },
+    "livenessProbe": { "type": "object" },
+    "readinessProbe": { "type": "object" },
+
+    "placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "nodeSelectionPolicy": { "type": "string", "enum": ["must", "prefer"] },
+        "nodeLabels": { "$ref": "#/definitions/stringMap" },
+        "taints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key"],
+            "properties": {
+              "key": { "type": "string", "minLength": 1 },
+              "value": { "type": "string" },
+              "effect": {
+                "type": "string",
+                "enum": ["", "NoSchedule", "PreferNoSchedule", "NoExecute"]
+              },
+              "timeAdded": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+
+    "podSecurityContext": {
+      "type": "object",
+      "properties": {
+        "seccompProfile": false
+      }
+    },
+    "securityContext": { "type": "object" },
+
+    "topologySpread": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "topologyKey": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "type": { "type": "string", "enum": ["ingress", "gateway", "route"] },
+        "host": {
+          "type": "string",
+          "pattern": "^$|^(\\*\\.)?[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+        },
+        "annotations": { "$ref": "#/definitions/stringMap" },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "certificate": { "type": "string" },
+            "key": { "type": "string" }
+          }
+        },
+        "ingress": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "className": { "type": "string" }
+          }
+        },
+        "gateway": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "parentRef": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "name": { "type": "string" },
+                "namespace": { "type": "string" }
+              }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["enabled"],
+            "properties": { "enabled": { "const": true } }
+          },
+          "then": {
+            "required": ["host"],
+            "properties": { "host": { "minLength": 1 } }
+          }
+        },
+        {
+          "if": {
+            "required": ["enabled", "tls"],
+            "properties": {
+              "enabled": { "const": true },
+              "tls": {
+                "required": ["enabled"],
+                "properties": { "enabled": { "const": true } }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "tls": {
+                "required": ["certificate", "key"],
+                "properties": {
+                  "certificate": { "minLength": 1 },
+                  "key": { "minLength": 1 }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["enabled", "type"],
+            "properties": {
+              "enabled": { "const": true },
+              "type": { "const": "gateway" }
+            }
+          },
+          "then": {
+            "required": ["gateway"],
+            "properties": {
+              "gateway": {
+                "required": ["parentRef"],
+                "properties": {
+                  "parentRef": {
+                    "required": ["name"],
+                    "properties": { "name": { "minLength": 1 } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "configMap": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mountMethod": { "$ref": "#/definitions/mountMethod" },
+        "mountPath": { "$ref": "#/definitions/absolutePath" },
+        "defaultMode": { "$ref": "#/definitions/fileMode" },
+        "data": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/definitions/dataKey" },
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "if": {
+        "required": ["mountMethod"],
+        "properties": { "mountMethod": { "const": "env" } }
+      },
+      "then": {
+        "properties": {
+          "data": { "propertyNames": { "$ref": "#/definitions/envName" } }
+        }
+      }
+    },
+
+    "secret": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mountMethod": { "$ref": "#/definitions/mountMethod" },
+        "mountPath": { "$ref": "#/definitions/absolutePath" },
+        "defaultMode": { "$ref": "#/definitions/fileMode" },
+        "data": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/definitions/dataKey" },
+          "additionalProperties": { "$ref": "#/definitions/base64" }
+        }
+      },
+      "if": {
+        "required": ["mountMethod"],
+        "properties": { "mountMethod": { "const": "env" } }
+      },
+      "then": {
+        "properties": {
+          "data": { "propertyNames": { "$ref": "#/definitions/envName" } }
+        }
+      }
+    }
+  }
+}

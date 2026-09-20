@@ -1,0 +1,10 @@
+.git/
+.gitignore
+.vscode/
+# helm-unittest suites: not part of the packaged chart
+tests/
+*.swp
+*.bak
+*.tmp
+# Never package local secret overlays
+secret*.values.yaml
