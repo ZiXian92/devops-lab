@@ -3,7 +3,7 @@
 Local lab: Podman + Nexus OSS (plain HTTP) + Terraform + Helm chart templates. Windows 11, PowerShell.
 
 - scripts/: PowerShell entry points, one VS Code task each (.vscode/tasks.json)
-- docker-compose.yaml: Nexus and the helm-cicd tool container (images/helm-cicd); run with podman compose
+- docker-compose.yaml: Nexus, the helm-cicd tool container (images/helm-cicd), and Jenkins (controller + agent, images/jenkins-*, JCasC in jenkins/casc/); run with podman compose
 - *-tf/: Terraform per system
 - app-deployment-template-charts/: Helm charts
 

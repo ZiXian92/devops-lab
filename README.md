@@ -6,11 +6,13 @@ A local DevOps lab on a single Windows machine. It runs a private **Nexus** regi
 
 | Path | Purpose |
 |---|---|
-| [docker-compose.yaml](docker-compose.yaml) | The services: Nexus, and `helm-cicd`, a tool container with helm, helm-unittest and kubeconform |
+| [docker-compose.yaml](docker-compose.yaml) | The services: Nexus, `helm-cicd` (a tool container with helm, helm-unittest and kubeconform), and Jenkins (`jenkins` controller + `jenkins-agent`) |
+| [jenkins/](jenkins/) | Jenkins Configuration as Code ([casc/jenkins.yaml](jenkins/casc/jenkins.yaml)) and the generated, gitignored `secrets/` |
 | [scripts/](scripts/) | PowerShell entry points behind the VS Code tasks |
 | [nexus-tf/](nexus-tf/) | Terraform for Nexus's internal resources: repositories, roles, users. See its [README](nexus-tf/README.md) |
 | [app-deployment-template-charts/](app-deployment-template-charts/) | Helm charts, one directory per chart |
 | [images/helm-cicd/](images/helm-cicd/) | Dockerfile and `tasks.sh` for the `helm-cicd` container |
+| [images/jenkins-controller/](images/jenkins-controller/), [images/jenkins-agent/](images/jenkins-agent/) | Dockerfiles for the Jenkins controller (plugins baked in) and agent (kubectl, helm, podman) |
 | [.vscode/tasks.json](.vscode/tasks.json) | The task definitions |
 
 ## Prerequisites
@@ -108,3 +110,21 @@ helm pull oci://localhost:8081/oci-internal/helm/deployment-templates/web-app --
 ## Changing the helm-cicd image
 
 After editing `images/helm-cicd/`, rebuild it with `podman compose up -d --build helm-cicd`. Or run `scripts/Test-Charts.ps1` or `scripts/Publish-Chart.ps1` with `-Rebuild`.
+
+## Jenkins
+
+The lab runs a Jenkins controller and one inbound agent, started by **Compose: up + post-startup** along with everything else.
+
+| | |
+|---|---|
+| Controller | `jenkins/jenkins` LTS on JDK 25, plugins from [plugins.txt](images/jenkins-controller/plugins.txt), UI at <http://localhost:8080> |
+| Login | user `admin`, password in `jenkins/secrets/admin-password` (generated on first start, gitignored) |
+| Agent | node `agent` (labels `agent podman docker kubectl helm`, 2 executors), official `jenkins/inbound-agent` on JDK 25 plus kubectl, helm and podman. The controller has 0 executors, so every build runs here |
+| Configuration | [jenkins/casc/jenkins.yaml](jenkins/casc/jenkins.yaml): users, permissions and the agent node. The UI is not the source of truth: after editing the file run `podman compose restart jenkins` |
+| Plugin under test | [Jenkins Templating Engine](https://plugins.jenkins.io/templating-engine/) (`templating-engine`), installed but not yet configured: no governance tier or pipeline templates exist yet |
+
+How the agent connects: the node is defined in JCasC as an inbound (WebSocket) agent. Its secret is derived from the controller's own key, so it can't be written into the file. The agent container's entrypoint fetches it from the controller as the `agent-connector` user, which only has Overall/Read and Agent/Connect (password in `jenkins/secrets/agent-connector-password`).
+
+`podman` in the agent is the remote client (`docker` is a symlink to it). It talks to the podman machine through its API socket, which the compose file mounts in, so `docker build` and `docker run` in a pipeline execute on the machine. That is root-equivalent access to the lab VM: fine locally, not for anything shared. The socket path defaults to `/run/user/1000/podman/podman.sock`; set `PODMAN_SOCKET` if `podman info` reports another. The agent has no kubeconfig yet.
+
+After editing `images/jenkins-controller/` or `images/jenkins-agent/`, rebuild with `podman compose up -d --build jenkins jenkins-agent`.

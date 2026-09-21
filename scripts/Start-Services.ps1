@@ -22,6 +22,10 @@
          values (URL, admin user, password) are written to
          nexus-tf/terraform.auto.tfvars.json (gitignored) so `terraform apply` in
          nexus-tf picks them up automatically.
+       - Jenkins: before compose starts, generates the admin and agent-connector
+         passwords into jenkins/secrets/ (gitignored) if they do not exist yet, since
+         JCasC reads them at startup. After startup it waits for the controller and
+         checks that the JCasC-defined node "agent" is connected.
 
   3. Finally runs scripts/Apply-Terraform.ps1, which applies every "<system>-tf" module
      (currently nexus-tf) so the systems' internal resources match the code.
@@ -48,7 +52,9 @@ param(
   # not exist either, the script stops (it never prompts itself: password entry belongs to the
   # VS Code task input, see .vscode/tasks.json).
   [string]$NexusAdminPassword,
-  [int]$NexusTimeoutSeconds    = 300
+  [int]$NexusTimeoutSeconds    = 300,
+  [string]$JenkinsUrl          = 'http://localhost:8080',
+  [int]$JenkinsTimeoutSeconds  = 300
 )
 
 $ErrorActionPreference = 'Stop'
@@ -90,6 +96,8 @@ function Start-ComposeServices {
   # Bind-mount source of the helm-cicd service. Terraform (helm-access.tf) fills it later, but
   # compose needs the directory to exist now, on a fresh checkout before the first apply.
   New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'nexus-tf\helm-registry') | Out-Null
+
+  New-JenkinsSecrets
 
   Write-Step "podman compose -f docker-compose.yaml up -d"
   podman compose -f $composeFile up -d
@@ -246,11 +254,68 @@ function Initialize-Nexus([string]$adminPassword) {
   Write-Host "    Nexus ready at $url (user admin; password saved in $tfvarsFile). Next: apply nexus-tf (see nexus-tf/README.md)." -ForegroundColor Green
 }
 
+# --- Post-startup: Jenkins ----------------------------------------------------
+function Get-JenkinsSecretsDir { Join-Path $repoRoot 'jenkins\secrets' }
+
+function New-JenkinsSecrets {
+  # Called before compose up: JCasC (jenkins/casc/jenkins.yaml) reads these files while
+  # Jenkins starts, and both jenkins and jenkins-agent bind-mount the directory. Existing
+  # files are never overwritten, so the passwords stay stable across runs.
+  $dir = Get-JenkinsSecretsDir
+  New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  $alphabet = [char[]]'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
+  foreach ($name in 'admin-password', 'agent-connector-password') {
+    $file = Join-Path $dir $name
+    if (Test-Path -LiteralPath $file -PathType Leaf) { continue }
+    $bytes = New-Object byte[] 24
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+    $password = -join ($bytes | ForEach-Object { $alphabet[$_ % $alphabet.Length] })
+    # No trailing newline and no BOM: JCasC's ${readFile:} and the agent use the content as is.
+    [IO.File]::WriteAllText($file, $password, (New-Object Text.UTF8Encoding($false)))
+    Write-Host "    generated $file"
+  }
+}
+
+function Initialize-Jenkins {
+  $containerName = 'jenkins'   # container_name in docker-compose.yaml
+  $url           = $JenkinsUrl.TrimEnd('/')
+  $adminFile     = Join-Path (Get-JenkinsSecretsDir) 'admin-password'
+
+  Write-Step "Jenkins: waiting for $url (timeout ${JenkinsTimeoutSeconds}s)"
+  $deadline = (Get-Date).AddSeconds($JenkinsTimeoutSeconds)
+  while ($true) {
+    $status = Get-HttpStatus { Invoke-WebRequest -UseBasicParsing -Uri "$url/login" -TimeoutSec 5 }
+    if ($status -eq 200) { break }
+    if ((Get-Date) -gt $deadline) {
+      throw "Jenkins did not become ready within ${JenkinsTimeoutSeconds}s (last HTTP status: $status). Check: podman logs $containerName"
+    }
+    Start-Sleep -Seconds 5
+  }
+  Write-Host "    Jenkins is up."
+
+  # The node comes from JCasC; the jenkins-agent container looks up its secret and connects.
+  Write-Step "Jenkins: waiting for the agent to connect"
+  $headers = New-BasicAuthHeader 'admin' ((Get-Content -LiteralPath $adminFile -Raw).Trim())
+  while ($true) {
+    $offline = $null
+    try {
+      $offline = (Invoke-RestMethod -UseBasicParsing -Uri "$url/computer/agent/api/json?tree=offline" -Headers $headers).offline
+    } catch { }
+    if ($offline -eq $false) { break }
+    if ((Get-Date) -gt $deadline) {
+      throw "The Jenkins node 'agent' is not connected within ${JenkinsTimeoutSeconds}s. Check: podman logs jenkins-agent"
+    }
+    Start-Sleep -Seconds 5
+  }
+  Write-Host "    Jenkins ready at $url (user admin; password in $adminFile); node 'agent' is online." -ForegroundColor Green
+}
 # --- Main ---------------------------------------------------------------------
 Write-Step "Nexus: resolving the admin password to use"
 $resolvedNexusPassword = Resolve-NexusAdminPassword   # first, so a missing password fails before anything starts
 Start-ComposeServices
 Initialize-Nexus $resolvedNexusPassword
+Initialize-Jenkins
 
 # Last: bring each system's internal resources (Nexus repositories, roles, users, ...) up to
 # date. Needs the services above to be ready and the tfvars files their post-startup wrote.

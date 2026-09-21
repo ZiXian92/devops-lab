@@ -1,0 +1,10 @@
+# Unpinned = latest compatible with the controller version at build time.
+configuration-as-code
+matrix-auth
+# Jenkins Templating Engine and what multibranch pipelines need around it.
+templating-engine
+workflow-aggregator
+workflow-multibranch
+branch-api
+cloudbees-folder
+git

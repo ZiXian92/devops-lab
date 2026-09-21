@@ -3,7 +3,7 @@
   "tasks": [
     {
       "label": "Compose: up + post-startup",
-      "detail": "podman compose up -d for docker-compose.yaml, run each service's post-startup actions (e.g. Nexus admin password), then terraform apply every *-tf module",
+      "detail": "podman compose up -d for docker-compose.yaml, generate the Jenkins secrets (jenkins/secrets/) before compose, run each service's post-startup actions (e.g. Nexus admin password, wait for Jenkins and its agent), then terraform apply every *-tf module",
       "type": "process",
       "command": "powershell.exe",
       "args": [
