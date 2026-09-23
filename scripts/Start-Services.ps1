@@ -6,11 +6,13 @@
 .DESCRIPTION
   1. KinD first (Initialize-Kind): creates the project-only "devops-lab" cluster from
      kind/kind-config.yaml (podman provider, container network "kind-devops-lab") if it
-     does not exist yet. It runs before compose so the network exists for compose
-     services to join. kubectl context: kind-devops-lab. The KIND_EXPERIMENTAL_* env
-     vars are set for this script's process only; set them yourself in any shell where
-     you run `kind` commands against this cluster (see the header of
-     kind/kind-config.yaml).
+     does not exist yet; if it does, best-effort starts any of its node containers that
+     are stopped (e.g. after a machine reboot or Podman Desktop restart -- they are plain
+     podman containers, not part of docker-compose.yaml, so compose never restarts them).
+     It runs before compose so the network exists for compose services to join. kubectl
+     context: kind-devops-lab. The KIND_EXPERIMENTAL_* env vars are set for this script's
+     process only; set them yourself in any shell where you run `kind` commands against
+     this cluster (see the header of kind/kind-config.yaml).
   2. `podman compose up -d` for everything in docker-compose.yaml.
   3. Runs one post-startup function per service (see the "Post-startup" section).
      Currently:
@@ -463,6 +465,20 @@ function Initialize-Kind {
   $existing = @(kind get clusters 2>$null)
   if ($existing -contains $clusterName) {
     Write-Host "    cluster '$clusterName' already exists."
+
+    # `kind get clusters` reports the cluster whether its node containers are running or
+    # not (they are plain podman containers, not part of docker-compose.yaml, so `podman
+    # compose up -d` never touches them) -- after a machine reboot or Podman Desktop
+    # restart they typically come back stopped rather than removed. Best-effort start any
+    # that are down; a failure here still leaves the error visible below.
+    $stoppedNodes = @(podman ps -a --filter "label=io.x-k8s.kind.cluster=$clusterName" --filter "status=exited" --format '{{.Names}}' 2>$null)
+    if ($stoppedNodes.Count -gt 0) {
+      Write-Step "KinD: starting stopped node container(s): $($stoppedNodes -join ', ')"
+      podman start @stoppedNodes | Out-Null
+      if ($LASTEXITCODE -ne 0) {
+        throw "podman start failed for kind node container(s) $($stoppedNodes -join ', ') (exit $LASTEXITCODE). Check: podman ps -a --filter label=io.x-k8s.kind.cluster=$clusterName"
+      }
+    }
   } else {
     Write-Step "KinD: creating cluster '$clusterName' (first run pulls the node image; this takes a few minutes)"
     kind create cluster --config $configFile

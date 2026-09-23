@@ -3,7 +3,7 @@
   "tasks": [
     {
       "label": "Compose: up + post-startup",
-      "detail": "Create the KinD cluster if missing, podman compose up -d for docker-compose.yaml, generate the Jenkins secrets (jenkins/secrets/) and Vault credential placeholders (vault-tf/jenkins-credentials/) before compose, run each service's post-startup actions (e.g. Nexus admin password, wait for Jenkins and its agent, init/unseal Vault), then terraform apply every *-tf module (restarting jenkins afterwards if vault-tf wrote a new AppRole credential)",
+      "detail": "Create the KinD cluster if missing (or start its node containers if stopped), podman compose up -d for docker-compose.yaml, generate the Jenkins secrets (jenkins/secrets/) and Vault credential placeholders (vault-tf/jenkins-credentials/) before compose, run each service's post-startup actions (e.g. Nexus admin password, wait for Jenkins and its agent, init/unseal Vault), then terraform apply every *-tf module (restarting jenkins afterwards if vault-tf wrote a new AppRole credential)",
       "type": "process",
       "command": "powershell.exe",
       "args": [
