@@ -2,9 +2,12 @@
 configuration-as-code
 matrix-auth
 # Jenkins Templating Engine and what multibranch pipelines need around it.
-templating-engine
 workflow-aggregator
 workflow-multibranch
 branch-api
 cloudbees-folder
 git
+hashicorp-vault-plugin
+secret-guard
+# JCasC's `jobs:` root key (defines the vault-secret-demo pipeline job).
+job-dsl

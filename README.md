@@ -1,15 +1,17 @@
 # devops-lab
 
-A local DevOps lab on a single Windows machine. It runs a private **Nexus** registry under Podman, manages Nexus's internal configuration with **Terraform**, and provides a small library of **Helm chart templates** that are linted, tested and published to that registry. Everything is driven by VS Code tasks (`Terminal > Run Task...`), which wrap the PowerShell scripts in [scripts/](scripts/).
+A local DevOps lab on a single Windows machine. It runs a private **Nexus** registry and a **Vault** secrets server under Podman, manages both services' internal configuration with **Terraform**, provides a small library of **Helm chart templates** that are linted, tested and published to Nexus, and runs a **Jenkins** controller/agent pair to pipeline it all together. Everything is driven by VS Code tasks (`Terminal > Run Task...`), which wrap the PowerShell scripts in [scripts/](scripts/).
 
 ## What's in the repo
 
 | Path | Purpose |
 |---|---|
-| [docker-compose.yaml](docker-compose.yaml) | The services: Nexus, `helm-cicd` (a tool container with helm, helm-unittest and kubeconform), and Jenkins (`jenkins` controller + `jenkins-agent`) |
+| [docker-compose.yaml](docker-compose.yaml) | The services: Nexus, `helm-cicd` (a tool container with helm, helm-unittest and kubeconform), Jenkins (`jenkins` controller + `jenkins-agent`), and Vault |
 | [jenkins/](jenkins/) | Jenkins Configuration as Code ([casc/jenkins.yaml](jenkins/casc/jenkins.yaml)) and the generated, gitignored `secrets/` |
+| [vault/](vault/) | Vault server config ([config/vault.hcl](vault/config/vault.hcl)) and the generated, gitignored `secrets/` (unseal key + root token) |
 | [scripts/](scripts/) | PowerShell entry points behind the VS Code tasks |
 | [nexus-tf/](nexus-tf/) | Terraform for Nexus's internal resources: repositories, roles, users. See its [README](nexus-tf/README.md) |
+| [vault-tf/](vault-tf/) | Terraform for Vault's internal resources: KV v2 engine, a sample secret, a read policy, and an AppRole for Jenkins. See its [README](vault-tf/README.md) |
 | [app-deployment-template-charts/](app-deployment-template-charts/) | Helm charts, one directory per chart |
 | [images/helm-cicd/](images/helm-cicd/) | Dockerfile and `tasks.sh` for the `helm-cicd` container |
 | [images/jenkins-controller/](images/jenkins-controller/), [images/jenkins-agent/](images/jenkins-agent/) | Dockerfiles for the Jenkins controller (plugins baked in) and agent (kubectl, helm, podman) |
@@ -55,6 +57,14 @@ To add another system:
 1. Add its service to `docker-compose.yaml`.
 2. Write an `Initialize-<Service>` function in [scripts/Start-Services.ps1](scripts/Start-Services.ps1), and call it before the Terraform step.
 3. Create a `<system>-tf/` directory. `Apply-Terraform.ps1` picks it up automatically.
+
+## Vault
+
+A single-node, file-storage-backed Vault server (`vault/config/vault.hcl`), plain HTTP like Nexus. **Compose: up + post-startup** initializes it on first run (single key share -- lab only), unseals it on every run (it reseals on every restart), and saves the unseal key and root token to `vault/secrets/init.json` (gitignored).
+
+`vault-tf/` then creates a KV v2 engine, a sample secret (`secret/devops-lab`), a read-only policy, and an AppRole for Jenkins (role `jenkins-devops-lab`). Its role-id/secret-id are bind-mounted into the `jenkins` container and added, by a `jobs:` script in JCasC, as a `vault-approle` credential scoped to the **`vault-demo` folder only** (not the global credential store) -- because that script only runs at startup, the setup task restarts `jenkins` after Terraform apply the first time vault-tf writes a real credential. See [vault-tf/README.md](vault-tf/README.md).
+
+The `vault-demo/vault-secret-demo` Jenkins pipeline job (also defined by that script) uses the credential to read and print the sample secret.
 
 ## Helm charts
 

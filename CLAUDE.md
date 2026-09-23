@@ -1,9 +1,10 @@
 # devops-lab
 
-Local lab: Podman + Nexus OSS (plain HTTP) + Terraform + Helm chart templates. Windows 11, PowerShell.
+Local lab: Podman + KinD + Nexus OSS (plain HTTP) + Vault + Jenkins + Terraform + Helm chart templates. Windows 11, PowerShell.
 
 - scripts/: PowerShell entry points, one VS Code task each (.vscode/tasks.json)
-- docker-compose.yaml: Nexus, the helm-cicd tool container (images/helm-cicd), and Jenkins (controller + agent, images/jenkins-*, JCasC in jenkins/casc/); run with podman compose
+- docker-compose.yaml: Nexus, the helm-cicd tool container (images/helm-cicd), Jenkins (controller + agent, images/jenkins-*, JCasC in jenkins/casc/), and Vault (config in vault/config/); run with podman compose
+- kind/kind-config.yaml: project-scoped cluster, network `kind-devops-lab`
 - *-tf/: Terraform per system
 - app-deployment-template-charts/: Helm charts
 

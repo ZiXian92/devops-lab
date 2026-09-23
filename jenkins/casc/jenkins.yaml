@@ -38,3 +38,99 @@ jenkins:
 unclassified:
   location:
     url: http://localhost:8080/
+  hashicorpVault:
+    configuration:
+      vaultUrl: "http://vault:8200"
+      engineVersion: 2
+jobs:
+  # Everything Vault-related lives in the "vault-demo" folder, including the "vault-approle"
+  # credential (added below via the folder's own CredentialsStore, not the global one) --
+  # jobs outside this folder cannot see or use it. role-id/secret-id come from vault-tf (see
+  # vault-tf/approle.tf), bind-mounted read-only from vault-tf/jenkins-credentials/ (empty
+  # placeholder files created by Start-Services.ps1 so this script doesn't fail on a fresh
+  # checkout, before vault-tf has run). Like the rest of JCasC, this script only re-runs at
+  # Jenkins startup, so restart jenkins after vault-tf applies for real:
+  #   podman compose restart jenkins
+  - script: |
+      import com.cloudbees.hudson.plugins.folder.Folder
+      import com.cloudbees.hudson.plugins.folder.properties.FolderCredentialsProvider.FolderCredentialsProperty
+      import com.cloudbees.plugins.credentials.CredentialsScope
+      import com.cloudbees.plugins.credentials.domains.Domain
+      import com.cloudbees.plugins.credentials.domains.DomainCredentials
+      import hudson.util.Secret
+
+      // job-dsl scripts only get compile-time access to job-dsl's own plugin dependencies
+      // (core, credentials, cloudbees-folder -- hence the imports above resolve fine); a
+      // static "import" of a class from an unrelated plugin like hashicorp-vault-plugin
+      // fails to compile. Loading it from the uberClassLoader at runtime instead works
+      // because that classloader aggregates every active plugin.
+      def vaultAppRoleCredentialClass = jenkins.model.Jenkins.get().pluginManager.uberClassLoader
+        .loadClass('com.datapipe.jenkins.vault.credentials.VaultAppRoleCredential')
+
+      // Created directly through the Jenkins API, not job-dsl's folder() builder: job-dsl
+      // only materializes items it creates once the whole script has run, so looking one
+      // back up with getItemByFullName() a few lines later (needed below, for the
+      // credential) would still return null. createProject()/getItem() are immediate.
+      def jenkinsInstance = jenkins.model.Jenkins.get()
+      def folderItem = jenkinsInstance.getItem('vault-demo')
+      if (folderItem == null) {
+        folderItem = jenkinsInstance.createProject(Folder, 'vault-demo')
+      }
+      folderItem.description = 'Vault demo: the vault-secret-demo pipeline and its vault-approle AppRole credential, which is scoped to this folder only.'
+      folderItem.save()
+
+      // Cleanup: earlier revisions of this script (before the folder existed) created
+      // "vault-secret-demo" at the top level. JCasC/job-dsl only creates/updates the items
+      // the script currently defines -- it never deletes items an older run of the script
+      // left behind -- so delete that stale top-level job if jenkins-home still has it.
+      def staleTopLevelJob = jenkinsInstance.getItem('vault-secret-demo')
+      if (staleTopLevelJob != null && staleTopLevelJob.parent == jenkinsInstance) {
+        staleTopLevelJob.delete()
+      }
+
+      pipelineJob('vault-demo/vault-secret-demo') {
+        description('Reads secret/devops-lab from Vault via the folder-scoped vault-approle AppRole credential (role+policy from vault-tf) and prints it.')
+        definition {
+          cps {
+            script('''
+              pipeline {
+                agent { label 'agent' }
+                stages {
+                  stage('Read secret from Vault') {
+                    steps {
+                      withVault(configuration: [vaultCredentialId: 'vault-approle'], vaultSecrets: [[
+                        path: 'secret/devops-lab',
+                        secretValues: [[envVar: 'DEMO_SECRET', vaultKey: 'greeting']]
+                      ]]) {
+                        sh 'echo "Secret from Vault: $DEMO_SECRET"'
+                      }
+                    }
+                  }
+                }
+              }
+            '''.stripIndent())
+            sandbox()
+          }
+        }
+      }
+
+      def roleId = new File('/run/vault-credentials/role-id').text.trim()
+      def secretId = new File('/run/vault-credentials/secret-id').text.trim()
+      def credId = 'vault-approle'
+      def cred = vaultAppRoleCredentialClass.newInstance(CredentialsScope.GLOBAL, credId,
+        'AppRole (role jenkins-devops-lab) for secret/devops-lab, from vault-tf', roleId, Secret.fromString(secretId), 'approle')
+
+      def prop = folderItem.properties.get(FolderCredentialsProperty)
+      if (prop == null) {
+        prop = new FolderCredentialsProperty([new DomainCredentials(Domain.global(), [cred])] as DomainCredentials[])
+        folderItem.properties.add(prop)
+      } else {
+        def store = prop.store
+        def existing = store.getCredentials(Domain.global()).find { it.id == credId }
+        if (existing) {
+          store.updateCredentials(Domain.global(), existing, cred)
+        } else {
+          store.addCredentials(Domain.global(), cred)
+        }
+      }
+      folderItem.save()

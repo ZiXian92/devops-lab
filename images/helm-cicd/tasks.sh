@@ -9,7 +9,7 @@ set -eu
 
 CHARTS_DIR="${CHARTS_DIR:-/workspace/app-deployment-template-charts}"
 DIST_DIR="${DIST_DIR:-/tmp/dist}"
-KUBERNETES_VERSION="${KUBERNETES_VERSION:-1.37.0}"
+KUBERNETES_VERSION="${KUBERNETES_VERSION:-1.37.0}"   # the kind cluster's version
 
 # Nexus OCI repo the charts are pushed to: oci://<host>/<repo>/<path>. The chart name is
 # appended by `helm push`. `nexus` is the compose service name on the shared network.

@@ -1,0 +1,10 @@
+# Written by scripts/Start-Services.ps1 -- holds all variable values, including the root token
+terraform.auto.tfvars.json
+# role-id/secret-id written by approle.tf, bind-mounted into the jenkins container
+jenkins-credentials/
+
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+crash.log

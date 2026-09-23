@@ -1,11 +1,18 @@
 <#
 .SYNOPSIS
-  Bring up the services in docker-compose.yaml with `podman compose`, then run each
-  service's post-startup actions.
+  Create the project's KinD cluster, bring up the services in docker-compose.yaml
+  with `podman compose`, then run each service's post-startup actions.
 
 .DESCRIPTION
-  1. `podman compose up -d` for everything in docker-compose.yaml.
-  2. Runs one post-startup function per service (see the "Post-startup" section).
+  1. KinD first (Initialize-Kind): creates the project-only "devops-lab" cluster from
+     kind/kind-config.yaml (podman provider, container network "kind-devops-lab") if it
+     does not exist yet. It runs before compose so the network exists for compose
+     services to join. kubectl context: kind-devops-lab. The KIND_EXPERIMENTAL_* env
+     vars are set for this script's process only; set them yourself in any shell where
+     you run `kind` commands against this cluster (see the header of
+     kind/kind-config.yaml).
+  2. `podman compose up -d` for everything in docker-compose.yaml.
+  3. Runs one post-startup function per service (see the "Post-startup" section).
      Currently:
        - Nexus: decides which admin password to use: -NexusAdminPassword if given, else
          nexus_admin_password from nexus-tf/terraform.auto.tfvars.json, else (file not
@@ -22,13 +29,25 @@
          values (URL, admin user, password) are written to
          nexus-tf/terraform.auto.tfvars.json (gitignored) so `terraform apply` in
          nexus-tf picks them up automatically.
+
        - Jenkins: before compose starts, generates the admin and agent-connector
          passwords into jenkins/secrets/ (gitignored) if they do not exist yet, since
-         JCasC reads them at startup. After startup it waits for the controller and
+         JCasC reads them at startup. Also creates empty vault-tf/jenkins-credentials/
+         placeholder files (role-id, secret-id) if missing, since JCasC's jobs: script reads
+         those too (to build the folder-scoped "vault-approle" credential) and vault-tf has
+         not run yet on a fresh checkout. After startup it waits for the controller and
          checks that the JCasC-defined node "agent" is connected.
 
-  3. Finally runs scripts/Apply-Terraform.ps1, which applies every "<system>-tf" module
-     (currently nexus-tf) so the systems' internal resources match the code.
+       - Vault: waits for it to answer, initializes it (single key share -- lab only) if
+         not already initialized, saving the unseal key and root token to
+         vault/secrets/init.json (gitignored), then unseals it if sealed (it reseals on
+         every restart even though its file storage persists). Writes vault-tf's variable
+         values (URL, root token) to vault-tf/terraform.auto.tfvars.json (gitignored).
+  4. Runs scripts/Apply-Terraform.ps1, which applies every "<system>-tf" module (nexus-tf,
+     vault-tf) so the systems' internal resources match the code.
+  5. If vault-tf just wrote a new AppRole role-id (jenkins-credentials/role-id changed),
+     restarts the jenkins container so JCasC picks up the real "vault-approle" credential
+     (see step 3's placeholder files), then waits for it again.
 
   To add a service: add it to docker-compose.yaml, write an Initialize-<Service>
   function below, and call it from the bottom of the script (before the Terraform step).
@@ -54,7 +73,11 @@ param(
   [string]$NexusAdminPassword,
   [int]$NexusTimeoutSeconds    = 300,
   [string]$JenkinsUrl          = 'http://localhost:8080',
-  [int]$JenkinsTimeoutSeconds  = 300
+  [int]$JenkinsTimeoutSeconds  = 300,
+  [string]$VaultUrl            = 'http://localhost:8200',
+  # URL as seen from the Terraform container (localhost there is the container itself).
+  [string]$VaultTerraformUrl   = 'http://host.containers.internal:8200',
+  [int]$VaultTimeoutSeconds    = 300
 )
 
 $ErrorActionPreference = 'Stop'
@@ -98,6 +121,7 @@ function Start-ComposeServices {
   New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'nexus-tf\helm-registry') | Out-Null
 
   New-JenkinsSecrets
+  New-VaultJenkinsCredentialPlaceholders
 
   Write-Step "podman compose -f docker-compose.yaml up -d"
   podman compose -f $composeFile up -d
@@ -310,14 +334,174 @@ function Initialize-Jenkins {
   }
   Write-Host "    Jenkins ready at $url (user admin; password in $adminFile); node 'agent' is online." -ForegroundColor Green
 }
+
+function New-VaultJenkinsCredentialPlaceholders {
+  # jenkins-credentials/role-id and secret-id are written for real by vault-tf
+  # (approle.tf); jenkins/casc/jenkins.yaml reads them via ${readFile:} at Jenkins startup,
+  # which fails if the files don't exist yet. Create them empty on a fresh checkout so the
+  # first compose up (before vault-tf has run) still boots; Jenkins is restarted after
+  # Terraform apply (see the bottom of this script) once they hold real values.
+  $dir = Join-Path $repoRoot 'vault-tf\jenkins-credentials'
+  New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  foreach ($name in 'role-id', 'secret-id') {
+    $file = Join-Path $dir $name
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+      [IO.File]::WriteAllText($file, '', (New-Object Text.UTF8Encoding($false)))
+    }
+  }
+}
+
+# --- Post-startup: Vault -------------------------------------------------------
+function Get-VaultSecretsDir { Join-Path $repoRoot 'vault\secrets' }
+function Get-VaultInitFile { Join-Path (Get-VaultSecretsDir) 'init.json' }
+function Get-VaultTfvarsFile { Join-Path $repoRoot 'vault-tf\terraform.auto.tfvars.json' }
+
+function Get-VaultHealth([string]$Url) {
+  # Returns the parsed /v1/sys/health body regardless of HTTP status (200 active/unsealed,
+  # 501 uninitialized, 503 sealed, ... are all non-2xx except the first, so Invoke-RestMethod
+  # throws for most of them; the body is still there, in the exception).
+  try {
+    return Invoke-RestMethod -UseBasicParsing -Uri "$Url/v1/sys/health" -TimeoutSec 5
+  } catch {
+    if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+      return ($_.ErrorDetails.Message | ConvertFrom-Json)
+    }
+    throw
+  }
+}
+
+function Initialize-Vault {
+  $containerName = 'vault'   # container_name in docker-compose.yaml
+  $url           = $VaultUrl.TrimEnd('/')
+  $initFile      = Get-VaultInitFile
+  $tfvarsFile    = Get-VaultTfvarsFile
+  New-Item -ItemType Directory -Force -Path (Get-VaultSecretsDir) | Out-Null
+
+  Write-Step "Vault: waiting for $url (timeout ${VaultTimeoutSeconds}s)"
+  $deadline = (Get-Date).AddSeconds($VaultTimeoutSeconds)
+  while ($true) {
+    $status = Get-HttpStatus { Invoke-WebRequest -UseBasicParsing -Uri "$url/v1/sys/health" -TimeoutSec 5 }
+    # Any of these means the server is answering; 0 means no connection yet.
+    if ($status -in 200, 429, 472, 473, 501, 503) { break }
+    if ((Get-Date) -gt $deadline) {
+      throw "Vault did not respond within ${VaultTimeoutSeconds}s (last HTTP status: $status). Check: podman logs $containerName"
+    }
+    Start-Sleep -Seconds 5
+  }
+  Write-Host "    Vault is up."
+
+  if (-not (Test-Path -LiteralPath $initFile -PathType Leaf)) {
+    $health = Get-VaultHealth $url
+    if ($health.initialized) {
+      throw "Vault reports it is already initialized, but $initFile is missing. If this is a fresh checkout with a pre-existing vault-data volume, either restore $initFile (unseal key + root token) or remove the vault-data volume to start over."
+    }
+
+    Write-Step "Vault: initializing (single key share, threshold 1 -- lab only)"
+    $ErrorActionPreference = 'Continue'   # native stderr must not be terminating (see Start-ComposeServices)
+    $json = (podman exec $containerName vault operator init -key-shares=1 -key-threshold=1 -format=json 2>$null)
+    $execExit = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($execExit -ne 0 -or -not $json) {
+      throw "vault operator init failed (exit $execExit)"
+    }
+    # No BOM on Windows PowerShell 5.1 (matches other secret files this script writes).
+    [IO.File]::WriteAllText($initFile, ($json | Out-String).Trim(), (New-Object Text.UTF8Encoding($false)))
+    Write-Host "    Vault initialized. Unseal key and root token saved to $initFile (gitignored) -- back this up, this lab uses a single key share." -ForegroundColor Yellow
+  }
+
+  $init      = Get-Content -LiteralPath $initFile -Raw | ConvertFrom-Json
+  $unsealKey = $init.unseal_keys_b64[0]
+  $rootToken = $init.root_token
+
+  Write-Step "Vault: checking seal status"
+  $health = Get-VaultHealth $url
+  if ($health.sealed) {
+    Write-Step "Vault: unsealing"
+    $ErrorActionPreference = 'Continue'
+    podman exec $containerName vault operator unseal $unsealKey *> $null
+    $execExit = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($execExit -ne 0) { throw "vault operator unseal failed (exit $execExit)" }
+
+    if ((Get-VaultHealth $url).sealed) {
+      throw "Vault is still sealed after 'vault operator unseal'. Check: podman logs $containerName"
+    }
+    Write-Host "    Vault unsealed."
+  } else {
+    Write-Host "    Vault is already unsealed."
+  }
+
+  Write-Step "Vault: writing $tfvarsFile"
+  $tfJson = [ordered]@{
+    vault_addr  = $VaultTerraformUrl
+    vault_token = $rootToken
+  } | ConvertTo-Json
+  [IO.File]::WriteAllText($tfvarsFile, $tfJson, (New-Object Text.UTF8Encoding($false)))
+
+  Write-Host "    Vault ready at $url (root token in $initFile). Next: apply vault-tf (see vault-tf/README.md)." -ForegroundColor Green
+}
+
+# --- Post-startup: KinD -------------------------------------------------------
+function Initialize-Kind {
+  $clusterName = 'devops-lab'                 # `name:` in kind/kind-config.yaml
+  $networkName = 'kind-devops-lab'
+  $configFile  = Join-Path $repoRoot 'kind\kind-config.yaml'
+
+  # kind and podman write progress to stderr; keep it from being terminating (see
+  # Start-ComposeServices) and rely on exit codes instead. Scoped to this function.
+  $ErrorActionPreference = 'Continue'
+
+  if (-not (Get-Command kind -ErrorAction SilentlyContinue)) {
+    throw "'kind' is not on PATH. Install it first (https://kind.sigs.k8s.io/docs/user/quick-start/#installation)."
+  }
+
+  # The network name is not a kind config field; it is only settable via env var.
+  $env:KIND_EXPERIMENTAL_PROVIDER       = 'podman'
+  $env:KIND_EXPERIMENTAL_PODMAN_NETWORK = $networkName
+
+  Write-Step "KinD: checking for cluster '$clusterName'"
+  $existing = @(kind get clusters 2>$null)
+  if ($existing -contains $clusterName) {
+    Write-Host "    cluster '$clusterName' already exists."
+  } else {
+    Write-Step "KinD: creating cluster '$clusterName' (first run pulls the node image; this takes a few minutes)"
+    kind create cluster --config $configFile
+    if ($LASTEXITCODE -ne 0) {
+      throw "kind create cluster failed (exit $LASTEXITCODE). If the error mentions cgroup controllers, rootless podman is the likely cause: podman machine stop; podman machine set --rootful; podman machine start."
+    }
+  }
+
+  Write-Host "    KinD ready: kubectl context kind-$clusterName, network $networkName, ingress ports localhost:9080/9443 (worker 1) and 9081/9444 (worker 2)." -ForegroundColor Green
+}
+
 # --- Main ---------------------------------------------------------------------
+# KinD first: it creates the "kind-devops-lab" container network that compose
+# services (e.g. Nexus) are meant to join, so that network must exist before compose up.
 Write-Step "Nexus: resolving the admin password to use"
 $resolvedNexusPassword = Resolve-NexusAdminPassword   # first, so a missing password fails before anything starts
+Initialize-Kind
 Start-ComposeServices
 Initialize-Nexus $resolvedNexusPassword
 Initialize-Jenkins
+Initialize-Vault
 
-# Last: bring each system's internal resources (Nexus repositories, roles, users, ...) up to
-# date. Needs the services above to be ready and the tfvars files their post-startup wrote.
+# Last: bring each system's internal resources (Nexus repositories, roles, users, Vault
+# secrets engine/policy/approle, ...) up to date. Needs the services above to be ready and
+# the tfvars files their post-startup wrote.
 Write-Step "Terraform: applying the *-tf modules (scripts/Apply-Terraform.ps1)"
+$vaultRoleIdFile = Join-Path $repoRoot 'vault-tf\jenkins-credentials\role-id'
+$roleIdBefore    = if (Test-Path -LiteralPath $vaultRoleIdFile -PathType Leaf) { Get-Content -LiteralPath $vaultRoleIdFile -Raw } else { $null }
+
 & (Join-Path $PSScriptRoot 'Apply-Terraform.ps1')
+
+# JCasC only reads the vault-approle credential's role-id/secret-id when Jenkins starts (see
+# jenkins/casc/jenkins.yaml), so restart it once vault-tf has written real values -- but only
+# then, so a plain re-run of this script doesn't bounce Jenkins every time.
+$roleIdAfter = if (Test-Path -LiteralPath $vaultRoleIdFile -PathType Leaf) { Get-Content -LiteralPath $vaultRoleIdFile -Raw } else { $null }
+if ($roleIdAfter -and $roleIdAfter -ne $roleIdBefore) {
+  Write-Step "Jenkins: restarting to load the Vault AppRole credential vault-tf just wrote"
+  $ErrorActionPreference = 'Continue'
+  podman compose -f $composeFile restart jenkins
+  $ErrorActionPreference = 'Stop'
+  Initialize-Jenkins
+}

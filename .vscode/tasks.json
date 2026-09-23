@@ -3,7 +3,7 @@
   "tasks": [
     {
       "label": "Compose: up + post-startup",
-      "detail": "podman compose up -d for docker-compose.yaml, generate the Jenkins secrets (jenkins/secrets/) before compose, run each service's post-startup actions (e.g. Nexus admin password, wait for Jenkins and its agent), then terraform apply every *-tf module",
+      "detail": "Create the KinD cluster if missing, podman compose up -d for docker-compose.yaml, generate the Jenkins secrets (jenkins/secrets/) and Vault credential placeholders (vault-tf/jenkins-credentials/) before compose, run each service's post-startup actions (e.g. Nexus admin password, wait for Jenkins and its agent, init/unseal Vault), then terraform apply every *-tf module (restarting jenkins afterwards if vault-tf wrote a new AppRole credential)",
       "type": "process",
       "command": "powershell.exe",
       "args": [
@@ -41,7 +41,7 @@
     },
     {
       "label": "Terraform: apply all",
-      "detail": "terraform init + apply for every *-tf module (nexus-tf, ...) in its container, to keep the systems' internal resources up to date. Services must already be running (see Compose: up + post-startup, which runs this as its last step)",
+      "detail": "terraform init + apply for every *-tf module (nexus-tf, vault-tf, ...) in its container, to keep the systems' internal resources up to date. Services must already be running (see Compose: up + post-startup, which runs this as its last step)",
       "type": "process",
       "command": "powershell.exe",
       "args": [

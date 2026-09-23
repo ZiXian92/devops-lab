@@ -6,6 +6,16 @@
   "editor.insertSpaces": true,
   "editor.tabSize": 2,
   "editor.detectIndentation": false,
+  // Secret files hold a raw password with no trailing newline (jenkins/casc/jenkins.yaml
+  // reads them via ${readFile:...} as-is). Tag them with a dedicated language id so the
+  // global files.insertFinalNewline/trimTrailingWhitespace above don't apply to them.
+  "files.associations": {
+    "jenkins/secrets/*": "jenkins-secret"
+  },
+  "[jenkins-secret]": {
+    "files.insertFinalNewline": false,
+    "files.trimTrailingWhitespace": false
+  },
   "[markdown]": {
     "files.trimTrailingWhitespace": false
   },
