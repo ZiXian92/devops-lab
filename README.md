@@ -1,12 +1,13 @@
 # devops-lab
 
-A local DevOps lab on a single Windows machine. It runs a private **Nexus** registry and a **Vault** secrets server under Podman, manages both services' internal configuration with **Terraform**, provides a small library of **Helm chart templates** that are linted, tested and published to Nexus, and runs a **Jenkins** controller/agent pair to pipeline it all together. Everything is driven by VS Code tasks (`Terminal > Run Task...`), which wrap the PowerShell scripts in [scripts/](scripts/).
+A local DevOps lab on a single Windows machine. It runs a project-scoped **KinD** Kubernetes cluster, a private **Nexus** registry and a **Vault** secrets server under Podman, manages both services' internal configuration with **Terraform**, provides a small library of **Helm chart templates** that are linted, tested and published to Nexus, and runs a **Jenkins** controller/agent pair to pipeline it all together. Everything is driven by VS Code tasks (`Terminal > Run Task...`), which wrap the PowerShell scripts in [scripts/](scripts/).
 
 ## What's in the repo
 
 | Path | Purpose |
 |---|---|
-| [docker-compose.yaml](docker-compose.yaml) | The services: Nexus, `helm-cicd` (a tool container with helm, helm-unittest and kubeconform), Jenkins (`jenkins` controller + `jenkins-agent`), and Vault |
+| [kind/kind-config.yaml](kind/kind-config.yaml) | KinD cluster definition: one control-plane and two ingress-ready worker nodes, on the `kind-devops-lab` container network |
+| [docker-compose.yaml](docker-compose.yaml) | The services: Nexus, `helm-cicd` (a tool container with helm, helm-unittest and kubeconform), Jenkins (`jenkins` controller + `jenkins-agent`), and Vault, all joined to the KinD cluster's network |
 | [jenkins/](jenkins/) | Jenkins Configuration as Code ([casc/jenkins.yaml](jenkins/casc/jenkins.yaml)) and the generated, gitignored `secrets/` |
 | [vault/](vault/) | Vault server config ([config/vault.hcl](vault/config/vault.hcl)) and the generated, gitignored `secrets/` (unseal key + root token) |
 | [scripts/](scripts/) | PowerShell entry points behind the VS Code tasks |
@@ -21,6 +22,7 @@ A local DevOps lab on a single Windows machine. It runs a private **Nexus** regi
 
 - Windows with PowerShell 5.1+ and VS Code
 - Podman, with a running machine (`podman machine start`) and a compose provider (`docker-compose` or `podman-compose`) on `PATH`
+- [`kind`](https://kind.sigs.k8s.io/docs/user/quick-start/#installation) and `kubectl` on `PATH`
 
 Terraform and Helm need no local install. They run in containers.
 
@@ -29,7 +31,7 @@ Terraform and Helm need no local install. They run in containers.
 1. In VS Code, run the task **Compose: first-time setup (set Nexus admin password)**.
 2. Enter the Nexus admin password you want when prompted.
 
-The task starts the services and then configures Nexus:
+The task creates the KinD cluster (if it doesn't exist yet), then starts the services and configures Nexus:
 
 - changes the admin password from Nexus's generated initial one to yours
 - accepts the license agreement
@@ -57,6 +59,16 @@ To add another system:
 1. Add its service to `docker-compose.yaml`.
 2. Write an `Initialize-<Service>` function in [scripts/Start-Services.ps1](scripts/Start-Services.ps1), and call it before the Terraform step.
 3. Create a `<system>-tf/` directory. `Apply-Terraform.ps1` picks it up automatically.
+
+## KinD
+
+A single-cluster, project-scoped Kubernetes cluster (`kind/kind-config.yaml`), created before the other services so its container network exists for them to join.
+
+- Podman provider, on the `kind-devops-lab` container network (not kind's default) so Nexus, Jenkins and Vault can reach it and it doesn't collide with other kind clusters on the machine.
+- One control-plane node and two `ingress-ready=true` worker nodes, Kubernetes v1.37.0. Worker 1 forwards host ports 9080/9443, worker 2 forwards 9081/9444, for an ingress controller's `hostPort`/`hostNetwork` listeners.
+- `kubectl` context: `kind-devops-lab`.
+
+**Compose: up + post-startup** creates the cluster (`Initialize-Kind` in [scripts/Start-Services.ps1](scripts/Start-Services.ps1)) if it doesn't exist yet; it's a no-op on later runs. The `KIND_EXPERIMENTAL_PROVIDER`/`KIND_EXPERIMENTAL_PODMAN_NETWORK` env vars it needs are set for that script's process only -- set them yourself (see the header of [kind/kind-config.yaml](kind/kind-config.yaml)) in any shell where you run `kind` commands directly, for example to delete the cluster.
 
 ## Vault
 

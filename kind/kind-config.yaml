@@ -1,0 +1,43 @@
+# KinD cluster for this project only.
+#
+# Create (PowerShell, podman provider). The network name is NOT a config-file field;
+# it comes from an env var and must be set on every kind command that touches the cluster:
+#   $env:KIND_EXPERIMENTAL_PROVIDER       = 'podman'
+#   $env:KIND_EXPERIMENTAL_PODMAN_NETWORK = 'kind-devops-lab'
+#   kind create cluster --config kind/kind-config.yaml
+#   kind delete cluster --name devops-lab
+#
+# kubectl context: kind-devops-lab
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: devops-lab
+
+# Kubernetes v1.37.0: the newest node image pre-built for kind v0.33.0. Keep the @sha256
+# digest (kind release notes require it); all nodes must use the same image.
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+
+  # Both workers carry ingress-ready=true. Point the ingress controller at them with
+  #   nodeSelector: { ingress-ready: "true" }
+  # (the control plane keeps its NoSchedule taint, so nothing else lands there).
+  #
+  # Two nodes cannot bind the same host port, so worker 2 uses offset host ports.
+  # The ingress controller must listen on 9080/9443 *on the node* (hostPort / hostNetwork):
+  # these are outside the default NodePort range (30000-32767).
+  - role: worker
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+    labels:
+      ingress-ready: "true"
+    extraPortMappings:
+      - containerPort: 9080
+        hostPort: 9080
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+      - containerPort: 9443
+        hostPort: 9443
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+
+  - role: worker
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
